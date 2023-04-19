@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <net/if.h>
 #include <linux/if_tun.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -59,6 +60,17 @@ int create_device(int* fd)
 	return 0;
 }
 
+void cleanup_route_table() {
+  run("iptables -t nat -D POSTROUTING -o tun0 -j MASQUERADE");
+  run("iptables -D FORWARD -i tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT");
+  run("iptables -D FORWARD -o tun0 -j ACCEPT");
+  char cmd[1024];
+  snprintf(cmd, sizeof(cmd), "ip route del %s", EXTERNAL_SERVER_IP);
+  run(cmd);
+  run("ip route del 0/1");
+  run("ip route del 128/1");
+}
+
 static void run(char *cmd) {
   printf("Execute `%s`\n", cmd);
   if (system(cmd)) {
@@ -95,13 +107,43 @@ void setup_route_table() {
   run(cmd);
   snprintf(cmd, sizeof(cmd), "ip route add 128/1 dev %s", TUN_DEV_NAME);
   run(cmd);
-
-  // CLIENT ?
-  // run("iptables -t nat -A POSTROUTING -s 10.8.0.0/16 ! -d 10.8.0.0/16 -m comment --comment 'vpndemo' -j MASQUERADE");
-  // run("iptables -A FORWARD -s 10.8.0.0/16 -m state --state RELATED,ESTABLISHED -j ACCEPT");
-  // run("iptables -A FORWARD -d 10.8.0.0/16 -j ACCEPT");
 }
 
+void cleanup_route_table() {
+  run("iptables -t nat -D POSTROUTING -o tun0 -j MASQUERADE");
+  run("iptables -D FORWARD -i tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT");
+  run("iptables -D FORWARD -o tun0 -j ACCEPT");
+  char cmd[1024];
+  snprintf(cmd, sizeof(cmd), "ip route del %s", EXTERNAL_SERVER_IP);
+  run(cmd);
+  run("ip route del 0/1");
+  run("ip route del 128/1");
+}
+
+void cleanup(int signo) {
+  printf("Goodbye, cruel world....\n");
+  if (signo == SIGHUP || signo == SIGINT || signo == SIGTERM) {
+    cleanup_route_table();
+    exit(0);
+  }
+}
+
+void cleanup_when_sig_exit() {
+  struct sigaction sa;
+  sa.sa_handler = &cleanup;
+  sa.sa_flags = SA_RESTART;
+  sigfillset(&sa.sa_mask);
+
+  if (sigaction(SIGHUP, &sa, NULL) < 0) {
+    perror("Cannot handle SIGHUP");
+  }
+  if (sigaction(SIGINT, &sa, NULL) < 0) {
+    perror("Cannot handle SIGINT");
+  }
+  if (sigaction(SIGTERM, &sa, NULL) < 0) {
+    perror("Cannot handle SIGTERM");
+  }
+}
 
 int main(int argc, char* argv[]) 
 {
@@ -117,6 +159,7 @@ int main(int argc, char* argv[])
   }
   ifconfig();
   setup_route_table();
+  cleanup_when_sig_exit();
     
   int error = cli->createConnection();
   if (error != 0)
@@ -148,7 +191,10 @@ int main(int argc, char* argv[])
             close(cli->getSocket());
             exit(1);
         }
-        printf("Msg sent to the pi %d bytes\n", bytesSNDExt);
+        char* ip_host = (char*) malloc(15);
+        inet_ntop(AF_INET, &(cli->from.sin_addr), ip_host,15);
+        printf("Msg sent to the pi, IP: %s, sent %d bytes\n", ip_host, bytesSNDExt);
+        free(ip_host);
 
         // // Get the response from the pi
         //  size_t msg_size = 512 * sizeof(char);
